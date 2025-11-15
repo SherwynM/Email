@@ -74,7 +74,7 @@ async function callGemini(emailText) {
     body: JSON.stringify(payload)
   });
 
-  const code = resp.status;
+  const code = resp.status; 
   const textResp = await resp.text();
 
   if (code < 200 || code >= 300) {
