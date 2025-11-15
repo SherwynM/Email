@@ -110,7 +110,6 @@ app.post('/summarize', async (req, res) => {
     }
 
     // 2) Build the EXACT SAME JSON string for HMAC as Apps Script
-    // Apps Script does: JSON.stringify({ text: String(text || '') })
     const payloadJson = JSON.stringify({ text: String(text || '') });
 
     // 3) Read signature from header
@@ -122,6 +121,11 @@ app.post('/summarize', async (req, res) => {
     // 4) Compute expected signature
     const computed = computeHmacBase64(payloadJson, SHARED_SECRET);
 
+    // 🔍 DEBUG LOGS (these are the ones you asked about)
+    console.log('payloadJson:', payloadJson);
+    console.log('headerSig:', signatureHeader);
+    console.log('computedSig:', computed);
+
     const a = Buffer.from(computed);
     const b = Buffer.from(signatureHeader);
 
@@ -129,7 +133,7 @@ app.post('/summarize', async (req, res) => {
       return res.status(401).json({ error: 'Invalid signature.' });
     }
 
-    // 5) At this point, HMAC is valid. Call Gemini
+    // 5) HMAC is valid → call Gemini
     const start = Date.now();
     const raw = await callGemini(text);
     const tookMs = Date.now() - start;
@@ -147,6 +151,7 @@ app.post('/summarize', async (req, res) => {
     });
   }
 });
+
 app.listen(PORT, () => {
   console.log(`Gemini proxy server listening on port ${PORT}`);
 });
