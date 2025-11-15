@@ -122,9 +122,13 @@ app.post('/summarize', async (req, res) => {
     const computed = computeHmacBase64(payloadJson, SHARED_SECRET);
 
     // 🔍 DEBUG LOGS (these are the ones you asked about)
+        // 🔍 DEBUG: inspect the secret and payload (temporary — remove after debugging)
+    console.log('sharedSecretRaw:', JSON.stringify(SHARED_SECRET));
+    console.log('secretLength:', typeof SHARED_SECRET === 'string' ? SHARED_SECRET.length : 'not-string');
     console.log('payloadJson:', payloadJson);
     console.log('headerSig:', signatureHeader);
     console.log('computedSig:', computed);
+
 
     const a = Buffer.from(computed);
     const b = Buffer.from(signatureHeader);
