@@ -100,20 +100,28 @@ app.get('/health', (req, res) => {
 // Main endpoint the Apps Script will call
 app.post('/summarize', async (req, res) => {
   try {
+    // 1) Read the body exactly as Apps Script sent it
     const body = req.body || {};
-    const text = String(body.text || '').trim();
-    if (!text) {
+    const text = typeof body.text === 'string' ? body.text : '';
+
+    // For validation we can still use trim, but NOT for HMAC payload
+    if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Missing text field in JSON body.' });
     }
 
-    // HMAC verification
-    const payloadJson = JSON.stringify({ text });
+    // 2) Build the EXACT SAME JSON string for HMAC as Apps Script
+    // Apps Script does: JSON.stringify({ text: String(text || '') })
+    const payloadJson = JSON.stringify({ text: String(text || '') });
+
+    // 3) Read signature from header
     const signatureHeader = req.get('X-AppsScript-Signature') || '';
     if (!signatureHeader) {
       return res.status(401).json({ error: 'Missing X-AppsScript-Signature header.' });
     }
 
+    // 4) Compute expected signature
     const computed = computeHmacBase64(payloadJson, SHARED_SECRET);
+
     const a = Buffer.from(computed);
     const b = Buffer.from(signatureHeader);
 
@@ -121,7 +129,7 @@ app.post('/summarize', async (req, res) => {
       return res.status(401).json({ error: 'Invalid signature.' });
     }
 
-    // Call Gemini
+    // 5) At this point, HMAC is valid. Call Gemini
     const start = Date.now();
     const raw = await callGemini(text);
     const tookMs = Date.now() - start;
@@ -139,7 +147,6 @@ app.post('/summarize', async (req, res) => {
     });
   }
 });
-
 app.listen(PORT, () => {
   console.log(`Gemini proxy server listening on port ${PORT}`);
 });
