@@ -9,8 +9,13 @@ const crypto = require('crypto');
 
 const app = express();
 app.use(helmet());
-app.use(express.json({ limit: '200kb' })); // limit body size
-
+app.use(express.json({
+  limit: '200kb',
+  verify: (req, res, buf) => {
+    // Save raw body as string so we can verify HMAC exactly
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 // Rate limiting to avoid abuse
 const limiter = rateLimit({
   windowMs: 60 * 1000,    // 1 minute
