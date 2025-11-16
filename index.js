@@ -105,35 +105,31 @@ app.get('/health', (req, res) => {
 // Main endpoint the Apps Script will call
 app.post('/summarize', async (req, res) => {
   try {
-    // 1) Read the body exactly as Apps Script sent it
+    // Raw body as sent by Apps Script (exact JSON string)
+    const payloadJson = req.rawBody || '';
+
+    // Parse the JSON body that express.json already handled
     const body = req.body || {};
     const text = typeof body.text === 'string' ? body.text : '';
 
-    // For validation we can still use trim, but NOT for HMAC payload
     if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Missing text field in JSON body.' });
     }
 
-    // 2) Build the EXACT SAME JSON string for HMAC as Apps Script
-    const payloadJson = JSON.stringify({ text: String(text || '') });
-
-    // 3) Read signature from header
+    // HMAC verification using the exact raw JSON string
     const signatureHeader = req.get('X-AppsScript-Signature') || '';
     if (!signatureHeader) {
       return res.status(401).json({ error: 'Missing X-AppsScript-Signature header.' });
     }
 
-    // 4) Compute expected signature
     const computed = computeHmacBase64(payloadJson, SHARED_SECRET);
 
-    // 🔍 DEBUG LOGS (these are the ones you asked about)
-        // 🔍 DEBUG: inspect the secret and payload (temporary — remove after debugging)
+    // 🔍 DEBUG (you can keep temporarily, then remove)
     console.log('sharedSecretRaw:', JSON.stringify(SHARED_SECRET));
     console.log('secretLength:', typeof SHARED_SECRET === 'string' ? SHARED_SECRET.length : 'not-string');
     console.log('payloadJson:', payloadJson);
     console.log('headerSig:', signatureHeader);
     console.log('computedSig:', computed);
-
 
     const a = Buffer.from(computed);
     const b = Buffer.from(signatureHeader);
@@ -142,7 +138,7 @@ app.post('/summarize', async (req, res) => {
       return res.status(401).json({ error: 'Invalid signature.' });
     }
 
-    // 5) HMAC is valid → call Gemini
+    // At this point, HMAC is valid → call Gemini
     const start = Date.now();
     const raw = await callGemini(text);
     const tookMs = Date.now() - start;
