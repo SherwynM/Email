@@ -7,7 +7,6 @@ const fetch = require('node-fetch');
 
 const app = express();
 
-// ✅ Required on Render/Heroku/Cloud Run to trust X-Forwarded-For
 app.set('trust proxy', 1);
 
 app.use(helmet());
@@ -18,10 +17,9 @@ app.use(express.json({
   }
 }));
 
-// Rate limit (safe because trust proxy is now true)
 const limiter = rateLimit({
-  windowMs: 60 * 1000, // 1 min window
-  max: 30,             // limit each IP to 30 requests/min
+  windowMs: 60 * 1000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -41,7 +39,13 @@ if (!API_KEY_SECRET) {
   process.exit(1);
 }
 
-async function callGemini(emailText) {
+// small helper for delay
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// call Gemini with simple retry on 503
+async function callGeminiWithRetry(emailText, maxRetries = 3) {
   const MAX_CHARS = 12000;
   let inputText = emailText || '';
   if (inputText.length > MAX_CHARS) {
@@ -68,28 +72,45 @@ async function callGemini(emailText) {
     GEMINI_MODEL
   )}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
 
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  let lastError = null;
 
-  const code = resp.status;
-  const textResp = await resp.text();
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-  if (code < 200 || code >= 300) {
+    const code = resp.status;
+    const textResp = await resp.text();
+
+    // success
+    if (code >= 200 && code < 300) {
+      const json = JSON.parse(textResp || '{}');
+      const output =
+        json.candidates &&
+        json.candidates[0] &&
+        json.candidates[0].content &&
+        json.candidates[0].content.parts &&
+        json.candidates[0].content.parts[0].text;
+
+      return (output || '').trim();
+    }
+
+    // if 503, store error & retry after short delay
+    if (code === 503 && attempt < maxRetries) {
+      console.warn(`Gemini 503 on attempt ${attempt}, retrying...`);
+      lastError = new Error(`Gemini API error 503: ${textResp}`);
+      await sleep(1000 * attempt); // backoff: 1s, 2s, ...
+      continue;
+    }
+
+    // other errors: throw immediately
     throw new Error(`Gemini API error ${code}: ${textResp}`);
   }
 
-  const json = JSON.parse(textResp || '{}');
-  const output =
-    json.candidates &&
-    json.candidates[0] &&
-    json.candidates[0].content &&
-    json.candidates[0].content.parts &&
-    json.candidates[0].content.parts[0].text;
-
-  return (output || '').trim();
+  // all retries failed with 503
+  throw lastError || new Error('Gemini API overloaded (503), all retries failed.');
 }
 
 app.get('/health', (req, res) => {
@@ -98,32 +119,34 @@ app.get('/health', (req, res) => {
 
 app.post('/summarize', async (req, res) => {
   try {
-    // 1) Simple API key authentication
     const clientKey = req.get('X-Api-Key') || '';
     if (!clientKey || clientKey !== API_KEY_SECRET) {
       return res.status(401).json({ error: 'Unauthorized: invalid API key.' });
     }
 
-    // 2) Validate body
     const body = req.body || {};
     const text = typeof body.text === 'string' ? body.text : '';
     if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Missing text field in JSON body.' });
     }
 
-    // 3) Call Gemini
     const start = Date.now();
-    const raw = await callGemini(text);
+    const raw = await callGeminiWithRetry(text);
     const tookMs = Date.now() - start;
 
-    return res.json({
-      ok: true,
-      raw,
-      tookMs
-    });
+    return res.json({ ok: true, raw, tookMs });
 
   } catch (err) {
     console.error('Error in /summarize:', err && err.message);
+
+    // If this was a 503 overload case, surface a nicer message
+    if (String(err.message || '').includes('503')) {
+      return res.status(503).json({
+        error: 'Model overloaded',
+        detail: 'Gemini reported that the model is overloaded. Please try again shortly.'
+      });
+    }
+
     return res.status(500).json({
       error: 'Internal server error',
       detail: String(err && err.message)
