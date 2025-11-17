@@ -1,49 +1,39 @@
 // Simple Gemini proxy for Render (HMAC auth only)
-
 require('dotenv').config();
 const express = require('express');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const fetch = require('node-fetch');
-const crypto = require('crypto');
 
 const app = express();
 app.use(helmet());
 app.use(express.json({
   limit: '200kb',
   verify: (req, res, buf) => {
-    // Save raw body as string so we can verify HMAC exactly
     req.rawBody = buf.toString('utf8');
   }
 }));
-// Rate limiting to avoid abuse
 const limiter = rateLimit({
-  windowMs: 60 * 1000,    // 1 minute
-  max: 30,                // 30 requests/min per IP
+  windowMs: 60 * 1000,
+  max: 30,
   standardHeaders: true,
   legacyHeaders: false
 });
 app.use(limiter);
 
 const PORT = process.env.PORT || 3000;
-const GEMINI_KEY = process.env.GEMINI_API_KEY;   // required
-const SHARED_SECRET = process.env.SHARED_SECRET; // required
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// NEW: simple shared API key for client authentication
+const API_KEY_SECRET = process.env.API_KEY_SECRET;
 
 if (!GEMINI_KEY) {
   console.error('GEMINI_API_KEY is required in environment variables.');
   process.exit(1);
 }
-if (!SHARED_SECRET) {
-  console.error('SHARED_SECRET is required in environment variables.');
+if (!API_KEY_SECRET) {
+  console.error('API_KEY_SECRET is required in environment variables.');
   process.exit(1);
-}
-
-// Compute HMAC-SHA256 and return base64 string
-function computeHmacBase64(payloadJson, secret) {
-  const hmac = crypto.createHmac('sha256', secret);
-  hmac.update(payloadJson, 'utf8');
-  return hmac.digest('base64');
 }
 
 async function callGemini(emailText) {
@@ -79,7 +69,7 @@ async function callGemini(emailText) {
     body: JSON.stringify(payload)
   });
 
-  const code = resp.status; 
+  const code = resp.status;
   const textResp = await resp.text();
 
   if (code < 200 || code >= 300) {
@@ -97,48 +87,26 @@ async function callGemini(emailText) {
   return (output || '').trim();
 }
 
-// Simple health check
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
 
-// Main endpoint the Apps Script will call
 app.post('/summarize', async (req, res) => {
   try {
-    // Raw body as sent by Apps Script (exact JSON string)
-    const payloadJson = req.rawBody || '';
+    // 1) Check API key header
+    const clientKey = req.get('X-Api-Key') || '';
+    if (!clientKey || clientKey !== API_KEY_SECRET) {
+      return res.status(401).json({ error: 'Unauthorized: invalid API key.' });
+    }
 
-    // Parse the JSON body that express.json already handled
+    // 2) Validate body
     const body = req.body || {};
     const text = typeof body.text === 'string' ? body.text : '';
-
     if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Missing text field in JSON body.' });
     }
 
-    // HMAC verification using the exact raw JSON string
-    const signatureHeader = req.get('X-AppsScript-Signature') || '';
-    if (!signatureHeader) {
-      return res.status(401).json({ error: 'Missing X-AppsScript-Signature header.' });
-    }
-
-    const computed = computeHmacBase64(payloadJson, SHARED_SECRET);
-
-    // 🔍 DEBUG (you can keep temporarily, then remove)
-    console.log('sharedSecretRaw:', JSON.stringify(SHARED_SECRET));
-    console.log('secretLength:', typeof SHARED_SECRET === 'string' ? SHARED_SECRET.length : 'not-string');
-    console.log('payloadJson:', payloadJson);
-    console.log('headerSig:', signatureHeader);
-    console.log('computedSig:', computed);
-
-    const a = Buffer.from(computed);
-    const b = Buffer.from(signatureHeader);
-
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      return res.status(401).json({ error: 'Invalid signature.' });
-    }
-
-    // At this point, HMAC is valid → call Gemini
+    // 3) Call Gemini
     const start = Date.now();
     const raw = await callGemini(text);
     const tookMs = Date.now() - start;
