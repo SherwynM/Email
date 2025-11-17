@@ -1,41 +1,4 @@
-require('dotenv').config();
-json.candidates &&
-json.candidates[0] &&
-json.candidates[0].content &&
-json.candidates[0].content.parts &&
-json.candidates[0].content.parts[0].text;
-
-
-return (output || '').trim();
-}
-
-
-if (code === 503 && attempt < maxRetries) {
-console.warn(`Gemini 503 on attempt ${attempt}, retrying...`);
-lastError = new Error(`Gemini API error 503: ${textResp}`);
-await sleep(1000 * attempt);
-continue;
-}
-
-
-throw new Error(`Gemini API error ${code}: ${textResp}`);
-}
-
-
-throw lastError || new Error('Gemini API overloaded (503), all retries failed.');
-}
-
-
-app.get('/health', (req, res) => {
-res.json({ ok: true });
-});
-
-
-app.post('/summarize', async (req, res) => {
-try {
-const clientKey = req.get('X-Api-Key') || '';
-if (!clientKey || clientKey !== API_KEY_SECRET) {
-return res.status(401).json({ error: 'Unauthorized: invalid API key.' });
+// index.js — Gemini proxy (updated to return model and structured responses)
 }
 
 
