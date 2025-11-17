@@ -9,7 +9,7 @@ const app = express();
 
 // Behind Render's proxy, so trust first proxy hop (fixes X-Forwarded-For warning)
 app.set('trust proxy', 1);
- 
+
 // Basic security headers
 app.use(helmet());
 
