@@ -182,6 +182,7 @@ app.post('/summarize', async (req, res) => {
     try {
       const tokenInfo = await verifyGoogleAccessToken(accessToken);
       userIdentity = tokenInfo.email || tokenInfo.user_id || tokenInfo.sub;
+      console.log('✅ Verified Google token for user:', userIdentity); // <-- log for visibility
     } catch (err) {
       console.warn('Google token verification failed:', err && err.message);
       return res
