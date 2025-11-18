@@ -1,4 +1,4 @@
-// index.js — Gemini proxy (API-key auth, retry, structured responses)
+// index.js — Gemini proxy (API-key auth + per-user Google OAuth, retry, structured responses)
 require('dotenv').config();
 const express = require('express');
 const helmet = require('helmet');
@@ -120,7 +120,52 @@ async function callGeminiWithRetry(emailText, maxRetries = 3) {
   throw lastError || new Error('Gemini API overloaded (503), all retries failed.');
 }
 
-// Health-check endpoint (Render / uptime, etc.)
+/* =====================================================================
+   Per-user auth via Google OAuth access token (tokeninfo + cache)
+===================================================================== */
+
+const TOKEN_CACHE_TTL_MS = 60 * 1000; // 60s TTL for token verification cache
+const tokenCache = new Map(); // token -> { payload, expiry }
+
+// Verify Google OAuth access token by calling tokeninfo endpoint
+async function verifyGoogleAccessToken(accessToken) {
+  if (!accessToken) throw new Error('No access token');
+
+  const now = Date.now();
+  const cached = tokenCache.get(accessToken);
+  if (cached && cached.expiry > now) {
+    return cached.payload; // { email, sub, user_id, ... }
+  }
+
+  const tokenInfoUrl = `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(
+    accessToken
+  )}`;
+
+  const r = await fetch(tokenInfoUrl);
+  if (!r.ok) {
+    throw new Error('Invalid Google access token');
+  }
+
+  const payload = await r.json();
+
+  // payload may contain: email, user_id, sub, scope, expires_in, audience, etc.
+  if (!payload.email && !payload.user_id && !payload.sub) {
+    throw new Error('Token verification returned no user identity');
+  }
+
+  tokenCache.set(accessToken, {
+    payload,
+    expiry: now + TOKEN_CACHE_TTL_MS,
+  });
+
+  return payload;
+}
+
+/* =====================================================================
+   Routes
+===================================================================== */
+
+// Health-check endpoint
 app.get('/health', (req, res) => {
   res.json({ ok: true, model: GEMINI_MODEL });
 });
@@ -128,13 +173,33 @@ app.get('/health', (req, res) => {
 // Main summarize endpoint
 app.post('/summarize', async (req, res) => {
   try {
-    // 1) API key auth
-    const clientKey = req.get('X-Api-Key') || '';
-    if (!clientKey || clientKey !== API_KEY_SECRET) {
-      return res.status(401).json({ error: 'Unauthorized: invalid API key.' });
+    // 1) Try per-user Authorization first
+    let userIdentity = null;
+    const authHeader = (req.get('Authorization') || '').trim();
+
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      const accessToken = authHeader.slice('bearer '.length).trim();
+      try {
+        const tokenInfo = await verifyGoogleAccessToken(accessToken);
+        // Prefer email; fallback to user_id or sub
+        userIdentity = tokenInfo.email || tokenInfo.user_id || tokenInfo.sub;
+      } catch (err) {
+        console.warn('Google token verification failed:', err && err.message);
+        userIdentity = null;
+      }
     }
 
-    // 2) Validate body
+    // 2) If no valid per-user token, fall back to API_KEY auth (demo/compat)
+    const clientKey = req.get('X-Api-Key') || '';
+    if (!userIdentity) {
+      if (!clientKey || clientKey !== API_KEY_SECRET) {
+        return res
+          .status(401)
+          .json({ error: 'Unauthorized: invalid API key or access token.' });
+      }
+    }
+
+    // 3) Validate body
     const body = req.body || {};
     const text = typeof body.text === 'string' ? body.text : '';
     if (!text || !text.trim()) {
@@ -143,17 +208,18 @@ app.post('/summarize', async (req, res) => {
         .json({ error: 'Missing text field in JSON body.', model: GEMINI_MODEL });
     }
 
-    // 3) Call Gemini with retry + timing
+    // 4) Call Gemini with retry + timing
     const start = Date.now();
     const raw = await callGeminiWithRetry(text);
     const tookMs = Date.now() - start;
 
-    // 4) Structured response with model info
+    // 5) Structured response with model + user info
     return res.json({
       ok: true,
       raw,
       tookMs,
       model: GEMINI_MODEL,
+      user: userIdentity || null,
     });
   } catch (err) {
     console.error('Error in /summarize:', err && err.message);
