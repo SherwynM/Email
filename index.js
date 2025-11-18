@@ -1,4 +1,4 @@
-// index.js — Gemini proxy (API-key auth + per-user Google OAuth, retry, structured responses)
+// index.js — Gemini proxy (per-user Google OAuth only, retry, structured responses)
 require('dotenv').config();
 const express = require('express');
 const helmet = require('helmet');
@@ -35,14 +35,9 @@ app.use(limiter);
 const PORT = process.env.PORT || 3000;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-const API_KEY_SECRET = process.env.API_KEY_SECRET;
 
 if (!GEMINI_KEY) {
   console.error('GEMINI_API_KEY is required in environment variables.');
-  process.exit(1);
-}
-if (!API_KEY_SECRET) {
-  console.error('API_KEY_SECRET is required in environment variables.');
   process.exit(1);
 }
 
@@ -173,33 +168,28 @@ app.get('/health', (req, res) => {
 // Main summarize endpoint
 app.post('/summarize', async (req, res) => {
   try {
-    // 1) Try per-user Authorization first
-    let userIdentity = null;
+    // 1) Require per-user Authorization header
     const authHeader = (req.get('Authorization') || '').trim();
-
-    if (authHeader.toLowerCase().startsWith('bearer ')) {
-      const accessToken = authHeader.slice('bearer '.length).trim();
-      try {
-        const tokenInfo = await verifyGoogleAccessToken(accessToken);
-        // Prefer email; fallback to user_id or sub
-        userIdentity = tokenInfo.email || tokenInfo.user_id || tokenInfo.sub;
-      } catch (err) {
-        console.warn('Google token verification failed:', err && err.message);
-        userIdentity = null;
-      }
+    if (!authHeader.toLowerCase().startsWith('bearer ')) {
+      return res
+        .status(401)
+        .json({ error: 'Unauthorized: missing Bearer access token.' });
     }
 
-    // 2) If no valid per-user token, fall back to API_KEY auth (demo/compat)
-    const clientKey = req.get('X-Api-Key') || '';
-    if (!userIdentity) {
-      if (!clientKey || clientKey !== API_KEY_SECRET) {
-        return res
-          .status(401)
-          .json({ error: 'Unauthorized: invalid API key or access token.' });
-      }
+    const accessToken = authHeader.slice('bearer '.length).trim();
+
+    let userIdentity;
+    try {
+      const tokenInfo = await verifyGoogleAccessToken(accessToken);
+      userIdentity = tokenInfo.email || tokenInfo.user_id || tokenInfo.sub;
+    } catch (err) {
+      console.warn('Google token verification failed:', err && err.message);
+      return res
+        .status(401)
+        .json({ error: 'Unauthorized: invalid Google access token.' });
     }
 
-    // 3) Validate body
+    // 2) Validate body
     const body = req.body || {};
     const text = typeof body.text === 'string' ? body.text : '';
     if (!text || !text.trim()) {
@@ -208,18 +198,18 @@ app.post('/summarize', async (req, res) => {
         .json({ error: 'Missing text field in JSON body.', model: GEMINI_MODEL });
     }
 
-    // 4) Call Gemini with retry + timing
+    // 3) Call Gemini with retry + timing
     const start = Date.now();
     const raw = await callGeminiWithRetry(text);
     const tookMs = Date.now() - start;
 
-    // 5) Structured response with model + user info
+    // 4) Structured response with model + user info
     return res.json({
       ok: true,
       raw,
       tookMs,
       model: GEMINI_MODEL,
-      user: userIdentity || null,
+      user: userIdentity,
     });
   } catch (err) {
     console.error('Error in /summarize:', err && err.message);
